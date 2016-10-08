@@ -8,9 +8,10 @@ struct Product
     int sleepTime;
 };
 
-const BUFFER_SIZE = 32;
+const BUFFER_SIZE = 5;
 pthread_mutex_t *mutex;
-sem_t *sem;
+sem_t * emptysem;
+sem_t * fullsem;
 
 void insert_product(struct Product *buffer);
 struct Product * remove_product(struct Product *buffer);
@@ -23,6 +24,7 @@ unsigned long genrand_int32(void);
 
 void *Produce(void *buffer){
     for(;;){
+        sem_wait(fullsem);
 	int rand =generate_random_num(5,3);
         printf("producing for %d seconds..\n",rand);
         sleep(rand);
@@ -31,13 +33,14 @@ void *Produce(void *buffer){
 	printf("After Production:\n");
         print_buffer((struct Product *)buffer);
 	pthread_mutex_unlock(mutex);
-        sem_post(sem);
+        sem_post(emptysem);
+	printf("Finished Production loop\n");
     }
 }
 
 void *Consume(void *buffer){
     for(;;){
-        sem_wait(sem);
+        sem_wait(emptysem);
         pthread_mutex_lock(mutex);
         struct Product * prod = remove_product((struct Product *)buffer);
 	printf("After Consumption:\n");
@@ -48,9 +51,9 @@ void *Consume(void *buffer){
             printf("Sleeping for %d\n", prod->sleepTime);
             sleep(prod->sleepTime);
             free(prod);
-        }
-
-printf("finished cosumption loop\n");
+	    sem_post(fullsem);
+    	}
+    printf("finished cosumption loop\n");
     }
 }
 
@@ -67,8 +70,13 @@ int main(int argc, char *argv[])
     pthread_t cons[num_con];
     mutex=(pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
     pthread_mutex_init(mutex, NULL);
-    sem = malloc(sizeof(sem_t));
-    sem_init(sem,0,-1);
+    emptysem = malloc(sizeof(sem_t));
+    sem_init(emptysem,0,-1);
+    fullsem = malloc(sizeof(sem_t));
+    sem_init(fullsem,0,BUFFER_SIZE+1);
+int semval;
+sem_getvalue(fullsem,&semval); 
+printf("sem value = %d\n",semval);
     struct Product * products =(struct Product*) malloc(sizeof(struct Product)*BUFFER_SIZE);
     int rc;
     int i;
