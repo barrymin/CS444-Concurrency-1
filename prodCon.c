@@ -9,19 +9,75 @@ struct Product
 };
 
 const BUFFER_SIZE = 5;
-pthread_mutex_t *mutex;
-sem_t * emptysem;
-sem_t * fullsem;
+pthread_mutex_t *mutex; //buffer access mutex
+sem_t * emptysem;       //sems to indicate if 
+sem_t * fullsem;        //buffer is empty or full
 
+void *Produce(void *buffer);
+void *Consume(void *buffer);
 void insert_product(struct Product *buffer);
 struct Product * remove_product(struct Product *buffer);
 int generate_random_num(int a, int b);
 int rdrandsupport();
 unsigned int rdrand();
 void print_buffer(struct Product * buffer);
+
+/* From MT19937 code by Takuji Nishimura and Makoto Matsumoto.*/
 void init_genrand(unsigned long s);
 unsigned long genrand_int32(void);
 
+
+int main(int argc, char *argv[])
+{   
+    if(argc !=3){
+        printf("Usage: %s [producers] [consumers]\n", argv[0]);
+        exit(-1);
+    }
+    init_genrand(time(NULL));
+    
+    int num_prod = atoi(argv[1]);
+    int num_con = atoi(argv[2]);
+    pthread_t prods[num_prod];
+    pthread_t cons[num_con];
+   
+    mutex=(pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
+    pthread_mutex_init(mutex, NULL);
+
+    emptysem = malloc(sizeof(sem_t));
+    sem_init(emptysem,0,-1);
+
+    fullsem = malloc(sizeof(sem_t));
+    sem_init(fullsem,0,BUFFER_SIZE+1);
+
+    struct Product * products =(struct Product*) malloc(sizeof(struct Product)*BUFFER_SIZE);
+    int rc,i;
+    //init buffer
+    for(i=0; i < BUFFER_SIZE; i++){
+        products[i].num= 0;
+        products[i].sleepTime=0;
+    }
+    //init produces threads
+    for(i=0;i< num_prod; i++){
+        printf("Creating producer %d\n",i);
+        rc = pthread_create(&prods[i], NULL, Produce,products);
+        if(rc){
+            printf("Error: unable to create thread, %d\n",rc);
+            exit(-1);
+        }
+    }
+    //init consumer threads
+    for(i=0;i< num_con; i++){
+        printf("Creating consumer %d\n",i+num_prod);
+        rc = pthread_create(&cons[i], NULL, Consume, products);
+        if(rc){
+            printf("Error: unable to create thread, %d\n",rc);
+            exit(-1);
+        }
+    }
+    pthread_exit(NULL);
+}
+/* Producer thread function, adds new product to buffer
+ and deals with synchronization*/
 void *Produce(void *buffer){
     for(;;){
         sem_wait(fullsem);
@@ -38,6 +94,8 @@ void *Produce(void *buffer){
     }
 }
 
+/* Consumer thread function, removes product from buffer
+ and deals with synchronization*/
 void *Consume(void *buffer){
     for(;;){
         sem_wait(emptysem);
@@ -57,53 +115,7 @@ void *Consume(void *buffer){
     }
 }
 
-int main(int argc, char *argv[])
-{   
-    if(argc !=3){
-        printf("Usage: %s [producers] [consumers]\n", argv[0]);
-        exit(-1);
-    }
-    init_genrand(time(NULL));
-    int num_prod = atoi(argv[1]);
-    int num_con = atoi(argv[2]);
-    pthread_t prods[num_prod];
-    pthread_t cons[num_con];
-    mutex=(pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
-    pthread_mutex_init(mutex, NULL);
-    emptysem = malloc(sizeof(sem_t));
-    sem_init(emptysem,0,-1);
-    fullsem = malloc(sizeof(sem_t));
-    sem_init(fullsem,0,BUFFER_SIZE+1);
-int semval;
-sem_getvalue(fullsem,&semval); 
-printf("sem value = %d\n",semval);
-    struct Product * products =(struct Product*) malloc(sizeof(struct Product)*BUFFER_SIZE);
-    int rc;
-    int i;
-
-    for(i=0; i < BUFFER_SIZE; i++){
-        products[i].num= 0;
-        products[i].sleepTime=0;
-    }
-    for(i=0;i< num_prod; i++){
-        printf("Creating producer %d\n",i);
-        rc = pthread_create(&prods[i], NULL, Produce,products);
-        if(rc){
-            printf("Error: unable to create thread, %d\n",rc);
-            exit(-1);
-        }
-    }
-    for(i=0;i< num_con; i++){
-        printf("Creating consumer %d\n",i+num_prod);
-        rc = pthread_create(&cons[i], NULL, Consume, products);
-        if(rc){
-            printf("Error: unable to create thread, %d\n",rc);
-            exit(-1);
-        }
-    }
-    pthread_exit(NULL);
-}
-
+/*Inserts a random generated product to buffer*/
 void insert_product(struct Product *buffer){
     int i;
     for(i=0; i<BUFFER_SIZE;i++){
@@ -114,6 +126,7 @@ void insert_product(struct Product *buffer){
         }
     }
 }
+/*removes first available product from buffer*/
 struct Product * remove_product(struct Product *buffer){
     int i;
     for(i=0;i<BUFFER_SIZE;i++){
@@ -128,7 +141,10 @@ struct Product * remove_product(struct Product *buffer){
     }
     return 0;
 }
-
+/* Generates a random number between [b,a+b-1] through RDRAND if supported
+or merssene twister if not 
+a is range of generated number [0,a]
+b is starting number	*/
 int generate_random_num(int a,int b){
  	if(rdrandsupport()){
 		unsigned int r = rdrand(a,b);
@@ -140,7 +156,7 @@ int generate_random_num(int a,int b){
 	   
 	
 }
-
+/*Checks if RDRAND is supported*/
 int rdrandsupport(){
 	unsigned int eax;
 	unsigned int ebx;
@@ -163,7 +179,7 @@ int rdrandsupport(){
 		return 0;
 	}
 }
-
+/* Returns a RDRAND random number or -1 for failure*/
 unsigned int rdrand(){
 	unsigned char sucs;
 	unsigned int rand;
