@@ -1,5 +1,6 @@
 #include <pthread.h>
 #include <stdio.h>
+#include <semaphore.h>
 
 struct Product
 {
@@ -7,63 +8,55 @@ struct Product
     int sleepTime;
 };
 
-const BUFFER_SIZE = 32;
-pthread_mutex_t *mutex;
-int cap=0;
+const BUFFER_SIZE = 5;
+pthread_mutex_t *mutex; //buffer access mutex
+sem_t * emptysem;       //sems to indicate if 
+sem_t * fullsem;        //buffer is empty or full
 
+void *Produce(void *buffer);
+void *Consume(void *buffer);
 void insert_product(struct Product *buffer);
 struct Product * remove_product(struct Product *buffer);
 int generate_random_num(int a, int b);
+int rdrandsupport();
+unsigned int rdrand();
+void print_buffer(struct Product * buffer);
 
-void *Produce(struct Product *buffer){
-    for(;;){
-        printf("producing..\n");
-        sleep(generate_random_num(3,7));
-        printf("finished producing..\n");
-        pthread_mutex_lock(mutex);
-        insert_product(buffer);
-        pthread_mutex_unlock(mutex);
-    }
+/* From MT19937 code by Takuji Nishimura and Makoto Matsumoto.*/
+void init_genrand(unsigned long s);
+unsigned long genrand_int32(void);
 
-}
-
-void *Consume(struct Product *buffer){
-    for(;;){
-
-        pthread_mutex_lock(mutex);
-        struct Product * prod = remove_product(buffer);
-        pthread_mutex_unlock(mutex);
-        if(prod != 0){
-            printf("Consumed product %d..",prod->num);
-            printf("Sleeping for %d\n", prod->sleepTime);
-            sleep(prod->sleepTime);
-            free(prod);
-        }
-
-    }
-}
 
 int main(int argc, char *argv[])
-{
-srand(time(NULL));
+{   
     if(argc !=3){
         printf("Usage: %s [producers] [consumers]\n", argv[0]);
         exit(-1);
     }
+    init_genrand(time(NULL));
+    
     int num_prod = atoi(argv[1]);
     int num_con = atoi(argv[2]);
     pthread_t prods[num_prod];
     pthread_t cons[num_con];
+   
     mutex=(pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
     pthread_mutex_init(mutex, NULL);
-    struct Product * products =(struct Product*) malloc(sizeof(struct Product)*BUFFER_SIZE);
-    int rc;
-    int i;
 
+    emptysem = malloc(sizeof(sem_t));
+    sem_init(emptysem,0,-1);
+
+    fullsem = malloc(sizeof(sem_t));
+    sem_init(fullsem,0,BUFFER_SIZE+1);
+
+    struct Product * products =(struct Product*) malloc(sizeof(struct Product)*BUFFER_SIZE);
+    int rc,i;
+    //init buffer
     for(i=0; i < BUFFER_SIZE; i++){
         products[i].num= 0;
         products[i].sleepTime=0;
     }
+    //init produces threads
     for(i=0;i< num_prod; i++){
         printf("Creating producer %d\n",i);
         rc = pthread_create(&prods[i], NULL, Produce,products);
@@ -72,6 +65,7 @@ srand(time(NULL));
             exit(-1);
         }
     }
+    //init consumer threads
     for(i=0;i< num_con; i++){
         printf("Creating consumer %d\n",i+num_prod);
         rc = pthread_create(&cons[i], NULL, Consume, products);
@@ -82,17 +76,57 @@ srand(time(NULL));
     }
     pthread_exit(NULL);
 }
+/* Producer thread function, adds new product to buffer
+ and deals with synchronization*/
+void *Produce(void *buffer){
+    for(;;){
+        sem_wait(fullsem);
+	int rand =generate_random_num(5,3);
+        printf("producing for %d seconds..\n",rand);
+        sleep(rand);
+        pthread_mutex_lock(mutex);
+        insert_product((struct Product *)buffer);
+	printf("After Production:\n");
+        print_buffer((struct Product *)buffer);
+	pthread_mutex_unlock(mutex);
+        sem_post(emptysem);
+	printf("Finished Production loop\n");
+    }
+}
 
+/* Consumer thread function, removes product from buffer
+ and deals with synchronization*/
+void *Consume(void *buffer){
+    for(;;){
+        sem_wait(emptysem);
+        pthread_mutex_lock(mutex);
+        struct Product * prod = remove_product((struct Product *)buffer);
+	printf("After Consumption:\n");
+	print_buffer((struct Product *)buffer);
+        pthread_mutex_unlock(mutex);
+        if(prod != 0){
+            printf("Consumed product %d..",prod->num);
+            printf("Sleeping for %d\n", prod->sleepTime);
+            sleep(prod->sleepTime);
+            free(prod);
+	    sem_post(fullsem);
+    	}
+    printf("finished cosumption loop\n");
+    }
+}
+
+/*Inserts a random generated product to buffer*/
 void insert_product(struct Product *buffer){
     int i;
     for(i=0; i<BUFFER_SIZE;i++){
         if(buffer[i].num == 0){
-            buffer[i].num = generate_random_num(1,200);
-            buffer[i].sleepTime = generate_random_num(2,9);
+            buffer[i].num = generate_random_num(200,1);
+            buffer[i].sleepTime = generate_random_num(8,2);
             return;
         }
     }
 }
+/*removes first available product from buffer*/
 struct Product * remove_product(struct Product *buffer){
     int i;
     for(i=0;i<BUFFER_SIZE;i++){
@@ -107,7 +141,128 @@ struct Product * remove_product(struct Product *buffer){
     }
     return 0;
 }
-
+/* Generates a random number between [b,a+b-1] through RDRAND if supported
+or merssene twister if not 
+a is range of generated number [0,a]
+b is starting number	*/
 int generate_random_num(int a,int b){
-    return rand() % b + a;
+ 	if(rdrandsupport()){
+		unsigned int r = rdrand(a,b);
+		if(r!=-1){
+			return (r%a)+b; 		
+		}	
+	}
+	return (genrand_int32()%a)+b;
+	   
+	
+}
+/*Checks if RDRAND is supported*/
+int rdrandsupport(){
+	unsigned int eax;
+	unsigned int ebx;
+	unsigned int ecx;
+	unsigned int edx;
+	char vendor[13];
+	
+	eax = 0x01;
+
+	__asm__ __volatile__(
+	                     "cpuid;"
+	                     : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+	                     : "a"(eax)
+	                     );
+	
+	if(ecx & 0x40000000){				
+		return 1;
+	}
+	else{
+		return 0;
+	}
+}
+/* Returns a RDRAND random number or -1 for failure*/
+unsigned int rdrand(){
+	unsigned char sucs;
+	unsigned int rand;
+	__asm__ __volatile__("rdrand %0; setc %1"
+			: "=r" (rand), "=qm" (sucs));
+	if(sucs)
+		return rand;
+	else
+		return -1;
+	//printf("%d random num = %d\n",ok,(rand%8)+2);
+
+}
+
+void print_buffer(struct Product * buffer){
+	int i;	
+	for(i=0; i < BUFFER_SIZE; i++){
+		printf("| ");
+		if(buffer[i].num != 0)
+			printf("%d ",buffer[i].num);
+	}
+	printf("|\n");
+
+}
+
+/* Period parameters */  
+#define N 624
+#define M 397
+#define MATRIX_A 0x9908b0dfUL   /* constant vector a */
+#define UPPER_MASK 0x80000000UL /* most significant w-r bits */
+#define LOWER_MASK 0x7fffffffUL /* least significant r bits */
+static unsigned long mt[N]; /* the array for the state vector  */
+static int mti=N+1; /* mti==N+1 means mt[N] is not initialized */
+
+/* generates a random number on [0,0xffffffff]-interval */
+unsigned long genrand_int32(void)
+{
+	unsigned long y;
+	static unsigned long mag01[2]={0x0UL, MATRIX_A};
+	/* mag01[x] = x * MATRIX_A  for x=0,1 */
+
+	if (mti >= N) { /* generate N words at one time */
+		int kk;
+
+		if (mti == N+1)   /* if init_genrand() has not been called, */
+			init_genrand(5489UL); /* a default initial seed is used */
+
+		for (kk=0;kk<N-M;kk++) {
+			y = (mt[kk]&UPPER_MASK)|(mt[kk+1]&LOWER_MASK);
+			mt[kk] = mt[kk+M] ^ (y >> 1) ^ mag01[y & 0x1UL];
+		}
+		for (;kk<N-1;kk++) {
+			y = (mt[kk]&UPPER_MASK)|(mt[kk+1]&LOWER_MASK);
+			mt[kk] = mt[kk+(M-N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
+		}
+		y = (mt[N-1]&UPPER_MASK)|(mt[0]&LOWER_MASK);
+		mt[N-1] = mt[M-1] ^ (y >> 1) ^ mag01[y & 0x1UL];
+
+		mti = 0;
+	}
+  
+	y = mt[mti++];
+
+	/* Tempering */
+	y ^= (y >> 11);
+	y ^= (y << 7) & 0x9d2c5680UL;
+	y ^= (y << 15) & 0xefc60000UL;
+	y ^= (y >> 18);
+
+	return y;
+}
+
+/* initializes mt[N] with a seed */
+void init_genrand(unsigned long s)
+{
+	mt[0]= s & 0xffffffffUL;
+	for (mti=1; mti<N; mti++) {
+		mt[mti] = 
+			(1812433253UL * (mt[mti-1] ^ (mt[mti-1] >> 30)) + mti); 
+		/* See Knuth TAOCP Vol2. 3rd Ed. P.106 for multiplier. */
+		/* In the previous versions, MSBs of the seed affect   */
+		/* only MSBs of the array mt[].                        */
+		/* 2002/01/09 modified by Makoto Matsumoto             */
+		mt[mti] &= 0xffffffffUL;
+		/* for >32 bit machines */
+	}
 }
